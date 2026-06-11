@@ -1,0 +1,138 @@
+# zh — zed helpers
+
+Tiny stdin → transform → stdout text filter for CSS values. It plugs into
+Zed through the vim filter command (`!`), so the same binary also works in
+Vim, Helix, or any shell pipeline.
+
+```sh
+echo "margin: 6px; color: #ff0000;" | zh
+# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23);
+```
+
+## Helpers
+
+| Name        | Aliases        | What it does                            |
+| ----------- | -------------- | --------------------------------------- |
+| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`            |
+| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23)` |
+
+```sh
+zh              # apply ALL helpers
+zh px           # only px → rem
+zh hex          # only hex → oklch
+zh --list       # list available helpers (also -l, --help)
+```
+
+Helpers are applied sequentially (a fold over the input); the order is the
+order in the `HELPERS` array.
+
+## Installation
+
+### Option 1: cargo install (recommended)
+
+```sh
+cargo install --path .
+```
+
+This builds a release binary and places it at `~/.cargo/bin/zh`. Make sure
+`~/.cargo/bin` is in your `PATH` (the rustup installer normally adds it):
+
+```sh
+# ~/.zshrc or ~/.bashrc, if it's not there already
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+### Option 2: manual build and copy
+
+```sh
+cargo build --release
+```
+
+The binary ends up at `target/release/zh`. Copy it to any directory in your
+`PATH`, for example:
+
+```sh
+mkdir -p ~/.local/bin
+cp target/release/zh ~/.local/bin/   # ensure ~/.local/bin is in PATH
+```
+
+> **Important for Zed:** the binary must be reachable through `PATH` as seen
+> by Zed itself. If Zed was launched from the Dock/Finder rather than a
+> terminal, it may not pick up `PATH` changes from your shell profile —
+> restart Zed after installing, or launch it via the `zed` CLI from a
+> terminal.
+
+### Verify
+
+```sh
+echo "margin: 6px; color: #ff0000;" | zh
+# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23);
+
+zh --list    # prints the helper table
+
+cargo test   # reference values are checked against oklch.com
+```
+
+## Usage in Zed
+
+Requires `"vim_mode": true` in `settings.json`.
+
+Manually: select line(s) (`V`), press `:` — Zed pre-fills `'<,'>`, then
+type `!zh` and hit Enter. The selected lines are replaced with the output.
+
+Keybindings — in `~/.config/zed/keymap.json`:
+
+```json
+[
+  {
+    "context": "vim_mode == visual",
+    "bindings": {
+      "space h h": ["workspace::SendKeystrokes", ": ! z h enter"],
+      "space h p": ["workspace::SendKeystrokes", ": ! z h space p x enter"],
+      "space h c": ["workspace::SendKeystrokes", ": ! z h space h e x enter"]
+    }
+  },
+  {
+    "context": "vim_mode == normal",
+    "bindings": {
+      "space h h": ["workspace::SendKeystrokes", "shift-v : ! z h enter"]
+    }
+  }
+]
+```
+
+- `space h h` — run all helpers at once (in normal mode it selects the
+  current line first)
+- `space h p` — px → rem only
+- `space h c` — hex → oklch only
+
+The same approach works in Vim/Neovim (`:'<,'>!zh`) and Helix
+(select, then `|zh`).
+
+## Configuration
+
+- `ZH_REM_BASE` — root font-size used for the px→rem conversion
+  (default: `16`). Set it in your shell profile, or per invocation:
+  `ZH_REM_BASE=10 zh px`.
+
+## Adding a new helper
+
+1. Write a `fn my_helper(input: &str) -> String` in `src/main.rs`
+2. Register it in the `HELPERS` array (name, aliases, description,
+   function)
+3. Reinstall: `cargo install --path .`
+
+## Design notes
+
+**Why regex over the whole line instead of a precise selection?**
+The vim filter in Zed is line-based: the entire line is replaced, and you
+can't pass just the `6px` fragment inside a line. So zh finds px values and
+hex colors in the line itself and converts them in place — selecting whole
+lines turns out to be faster than making a precise selection.
+
+**Idempotency.** Values inside comments (`/* 6px */`) are left untouched,
+so running the filter twice over the same text is safe.
+
+**Exact output.** zh writes back exactly what it transformed — no trailing
+newline is added, because a vim filter must return precisely the text that
+gets pasted back into the buffer.

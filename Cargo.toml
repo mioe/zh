@@ -1,0 +1,12 @@
+[package]
+name = "zh"
+version = "0.1.0"
+edition = "2021"
+description = "Stdin→stdout text helpers for Zed (and any editor with a shell filter)"
+
+[dependencies]
+regex = "1"
+
+[profile.release]
+lto = true
+strip = true

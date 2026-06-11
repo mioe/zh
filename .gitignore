@@ -1,0 +1,10 @@
+# macOS-specific files
+.DS_Store
+
+# ide setting folder
+.idea/
+.vscode/
+.claude/
+
+# Added by cargo
+/target
