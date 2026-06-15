@@ -6,15 +6,18 @@ Vim, Helix, or any shell pipeline.
 
 ```sh
 echo "margin: 6px; color: #ff0000;" | zh
-# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23);
+# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23) /* #ff0000 */;
 ```
 
 ## Helpers
 
-| Name        | Aliases        | What it does                            |
-| ----------- | -------------- | --------------------------------------- |
-| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`            |
-| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23)` |
+| Name        | Aliases        | What it does                                            |
+| ----------- | -------------- | ------------------------------------------------------- |
+| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                            |
+| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */`  |
+
+Both helpers keep the original value as a trailing `/* … */` comment.
+`hex2oklch` also lowercases the hex in that comment (`#FF0000` → `#ff0000`).
 
 ```sh
 zh              # apply ALL helpers
@@ -62,11 +65,32 @@ cp target/release/zh ~/.local/bin/   # ensure ~/.local/bin is in PATH
 > restart Zed after installing, or launch it via the `zed` CLI from a
 > terminal.
 
+### Updating
+
+If you already have `zh` installed, pull the latest changes and rebuild from
+the repo:
+
+```sh
+git pull
+cargo install --path . --force   # rebuild and overwrite ~/.cargo/bin/zh
+```
+
+The `--force` flag is what makes `cargo install` overwrite the existing
+binary. If you installed manually (Option 2), rebuild and copy again instead:
+
+```sh
+git pull
+cargo build --release
+cp target/release/zh ~/.local/bin/   # or wherever you copied it before
+```
+
+Restart Zed afterwards so it picks up the new binary.
+
 ### Verify
 
 ```sh
 echo "margin: 6px; color: #ff0000;" | zh
-# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23);
+# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23) /* #ff0000 */;
 
 zh --list    # prints the helper table
 

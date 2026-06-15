@@ -36,7 +36,7 @@ const HELPERS: &[Helper] = &[
     Helper {
         name: "hex2oklch",
         aliases: &["hex", "oklch"],
-        about: "#ff0000 -> oklch(62.8% 0.2577 29.23)",
+        about: "#ff0000 -> oklch(62.8% 0.2577 29.23) /* #ff0000 */",
         run: hex2oklch,
     },
 ];
@@ -110,11 +110,21 @@ fn px2rem(input: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn hex2oklch(input: &str) -> String {
-    let re = Regex::new(r"#([0-9a-fA-F]{3,8})\b").unwrap();
+    // Group 1 catches a hex already living inside a comment (`/* #ff0000 */`)
+    // so re-running zh on an already converted line is a no-op for it.
+    let re = Regex::new(r"(/\*\s*)?#([0-9a-fA-F]{3,8})\b").unwrap();
 
     re.replace_all(input, |c: &Captures| {
-        match parse_hex(&c[1]) {
-            Some((r, g, b, alpha)) => format_oklch(srgb_to_oklch(r, g, b), alpha),
+        if c.get(1).is_some() {
+            return c[0].to_string();
+        }
+        match parse_hex(&c[2]) {
+            // Echo the original hex as a trailing comment, lowercased (`#FF0000` -> `#ff0000`).
+            Some((r, g, b, alpha)) => format!(
+                "{} /* #{} */",
+                format_oklch(srgb_to_oklch(r, g, b), alpha),
+                c[2].to_lowercase()
+            ),
             None => c[0].to_string(), // not a valid color length (e.g. 5 digits)
         }
     })
@@ -213,24 +223,47 @@ mod tests {
 
     #[test]
     fn hex_red() {
-        assert_eq!(hex2oklch("#ff0000"), "oklch(62.8% 0.2577 29.23)");
+        assert_eq!(
+            hex2oklch("#ff0000"),
+            "oklch(62.8% 0.2577 29.23) /* #ff0000 */"
+        );
+    }
+
+    #[test]
+    fn hex_uppercase_is_lowercased_in_comment() {
+        assert_eq!(
+            hex2oklch("#FF0000"),
+            "oklch(62.8% 0.2577 29.23) /* #ff0000 */"
+        );
+    }
+
+    #[test]
+    fn hex_idempotent() {
+        let once = hex2oklch("color: #FF0000;");
+        assert_eq!(hex2oklch(&once), once);
     }
 
     #[test]
     fn hex_gray_is_achromatic() {
-        assert_eq!(hex2oklch("#808080"), "oklch(59.99% 0 0)");
+        assert_eq!(hex2oklch("#808080"), "oklch(59.99% 0 0) /* #808080 */");
     }
 
     #[test]
     fn hex_shorthand_and_alpha() {
-        assert_eq!(hex2oklch("#fff"), "oklch(100% 0 0)");
-        assert_eq!(hex2oklch("#ff000080"), "oklch(62.8% 0.2577 29.23 / 50.2%)");
+        assert_eq!(hex2oklch("#fff"), "oklch(100% 0 0) /* #fff */");
+        assert_eq!(
+            hex2oklch("#ff000080"),
+            "oklch(62.8% 0.2577 29.23 / 50.2%) /* #ff000080 */"
+        );
     }
 
     #[test]
     fn mixed_line() {
         let line = "border: 1px solid #3b3b3b;";
         let out = hex2oklch(&px2rem(line));
-        assert_eq!(out, "border: 0.0625rem /* 1px */ solid oklch(35.23% 0 0);");
+        assert_eq!(
+            out,
+            "border: 0.0625rem /* 1px */ solid oklch(35.23% 0 0) /* #3b3b3b */;"
+        );
     }
 }
