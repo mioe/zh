@@ -7,6 +7,7 @@
 //!   zh              apply ALL helpers
 //!   zh px           only px → rem
 //!   zh hex          only hex → oklch
+//!   zh now          refresh a timestamp to the current local time
 //!   zh --list       list available helpers
 //!
 //! Env:
@@ -38,6 +39,12 @@ const HELPERS: &[Helper] = &[
         aliases: &["hex", "oklch"],
         about: "#ff0000 -> oklch(62.8% 0.2577 29.23) /* #ff0000 */",
         run: hex2oklch,
+    },
+    Helper {
+        name: "now",
+        aliases: &["date", "time"],
+        about: "2026-06-11 at 01.50.48 PM -> current local time",
+        run: now,
     },
 ];
 
@@ -203,6 +210,49 @@ fn fmt(v: f64, decimals: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// now — refresh a timestamp to the current local time
+// ---------------------------------------------------------------------------
+
+/// Matches the timestamp shape produced by `date "+%Y-%m-%d at %I.%M.%S %p"`,
+/// e.g. `2026-06-11 at 01.50.48 PM`, and replaces every occurrence with the
+/// current local time in the same format. Lines without such a stamp are
+/// returned untouched, so running over a whole selection only rewrites dates.
+fn now(input: &str) -> String {
+    let re = Regex::new(r"\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)").unwrap();
+
+    // Bail out (and skip the subprocess) when there's nothing to refresh.
+    if !re.is_match(input) {
+        return input.to_string();
+    }
+
+    match current_timestamp() {
+        Some(stamp) => re
+            .replace_all(input, |_: &Captures| stamp.clone())
+            .into_owned(),
+        None => input.to_string(),
+    }
+}
+
+/// Shell out to `date` for the local time — it owns the timezone and the
+/// 12-hour/AM-PM formatting, so we don't reimplement either. Returns `None`
+/// (leaving the input untouched) if `date` is missing or fails.
+fn current_timestamp() -> Option<String> {
+    let out = std::process::Command::new("date")
+        .arg("+%Y-%m-%d at %I.%M.%S %p")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stamp = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if stamp.is_empty() {
+        None
+    } else {
+        Some(stamp)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests (reference values cross-checked against oklch.com)
 // ---------------------------------------------------------------------------
 
@@ -255,6 +305,30 @@ mod tests {
             hex2oklch("#ff000080"),
             "oklch(62.8% 0.2577 29.23 / 50.2%) /* #ff000080 */"
         );
+    }
+
+    #[test]
+    fn now_replaces_the_stamp_only() {
+        let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
+        let out = now("createdAt: 2026-06-11 at 01.50.48 PM");
+        let value = out.strip_prefix("createdAt: ").unwrap();
+        assert!(stamp.is_match(value), "got {out:?}");
+        // The prefix (key) is preserved untouched.
+        assert!(out.starts_with("createdAt: "));
+    }
+
+    #[test]
+    fn now_leaves_non_dates_untouched() {
+        assert_eq!(now("author: mioe"), "author: mioe");
+        assert_eq!(now("margin: 6px;"), "margin: 6px;");
+    }
+
+    #[test]
+    fn now_is_idempotent_in_shape() {
+        // Re-running keeps producing a valid stamp (a fresh "now", same format).
+        let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
+        let once = now("2026-06-11 at 01.50.48 PM");
+        assert!(stamp.is_match(now(&once).trim()));
     }
 
     #[test]

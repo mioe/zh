@@ -15,6 +15,7 @@ echo "margin: 6px; color: #ff0000;" | zh
 | ----------- | -------------- | ------------------------------------------------------- |
 | `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                            |
 | `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */`  |
+| `now`       | `date`, `time` | `2026-06-11 at 01.50.48 PM` → current local time        |
 
 Both helpers keep the original value as a trailing `/* … */` comment.
 `hex2oklch` also lowercases the hex in that comment (`#FF0000` → `#ff0000`).
@@ -113,7 +114,8 @@ Keybindings — in `~/.config/zed/keymap.json`:
     "bindings": {
       "space h h": ["workspace::SendKeystrokes", ": ! z h enter"],
       "space h p": ["workspace::SendKeystrokes", ": ! z h space p x enter"],
-      "space h c": ["workspace::SendKeystrokes", ": ! z h space h e x enter"]
+      "space h c": ["workspace::SendKeystrokes", ": ! z h space h e x enter"],
+      "space h n": ["workspace::SendKeystrokes", ": ! z h space n o w enter"]
     }
   },
   {
@@ -129,6 +131,7 @@ Keybindings — in `~/.config/zed/keymap.json`:
   current line first)
 - `space h p` — px → rem only
 - `space h c` — hex → oklch only
+- `space h n` — refresh a `… at HH.MM.SS AM/PM` timestamp to the current time
 
 The same approach works in Vim/Neovim (`:'<,'>!zh`) and Helix
 (select, then `|zh`).
