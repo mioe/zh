@@ -4,10 +4,11 @@
 //!   select lines → `:` → `'<,'>!zh` → Enter
 //!
 //! Usage:
-//!   zh              apply ALL helpers
+//!   zh              apply ALL helpers (sort excluded — it is opt-in)
 //!   zh px           only px → rem
 //!   zh hex          only hex → oklch
 //!   zh now          refresh a timestamp to the current local time
+//!   zh sort         sort the selected lines alphabetically
 //!   zh --list       list available helpers
 //!
 //! Env:
@@ -23,6 +24,11 @@ struct Helper {
     name: &'static str,
     aliases: &'static [&'static str],
     about: &'static str,
+    /// Whether bare `zh` (no args) runs this helper. The value-conversion
+    /// helpers compose safely over a line and default to `true`; structural
+    /// helpers like `sort`, which *reorder* lines, are opt-in (`false`) so a
+    /// plain `zh` never shuffles a selection unexpectedly — you must name it.
+    in_all: bool,
     run: Transform,
 }
 
@@ -32,19 +38,29 @@ const HELPERS: &[Helper] = &[
         name: "px2rem",
         aliases: &["px", "rem"],
         about: "6px -> 0.375rem /* 6px */",
+        in_all: true,
         run: px2rem,
     },
     Helper {
         name: "hex2oklch",
         aliases: &["hex", "oklch"],
         about: "#ff0000 -> oklch(62.8% 0.2577 29.23) /* #ff0000 */",
+        in_all: true,
         run: hex2oklch,
     },
     Helper {
         name: "now",
         aliases: &["date", "time"],
         about: "2026-06-11 at 01.50.48 PM -> current local time",
+        in_all: true,
         run: now,
+    },
+    Helper {
+        name: "sort",
+        aliases: &["asc"],
+        about: "sort the selected lines alphabetically (opt-in; visual mode)",
+        in_all: false,
+        run: sort,
     },
 ];
 
@@ -62,7 +78,7 @@ fn main() {
     }
 
     let selected: Vec<&Helper> = if args.is_empty() {
-        HELPERS.iter().collect()
+        HELPERS.iter().filter(|h| h.in_all).collect()
     } else {
         args.iter()
             .filter_map(|a| {
@@ -253,6 +269,26 @@ fn current_timestamp() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// sort — sort the selected lines alphabetically
+// ---------------------------------------------------------------------------
+
+/// Sort the input's lines in ascending lexicographic order. This is meant for a
+/// *visual* selection of multiple lines; sorting a single line is a no-op, which
+/// is why the README binds it in visual mode only. A trailing newline (if the
+/// input had one) is preserved so the filter pastes back cleanly, and sorting is
+/// naturally idempotent — re-running over already-sorted lines changes nothing.
+fn sort(input: &str) -> String {
+    let trailing_newline = input.ends_with('\n');
+    let mut lines: Vec<&str> = input.lines().collect();
+    lines.sort();
+    let mut output = lines.join("\n");
+    if trailing_newline {
+        output.push('\n');
+    }
+    output
+}
+
+// ---------------------------------------------------------------------------
 // Tests (reference values cross-checked against oklch.com)
 // ---------------------------------------------------------------------------
 
@@ -329,6 +365,28 @@ mod tests {
         let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
         let once = now("2026-06-11 at 01.50.48 PM");
         assert!(stamp.is_match(now(&once).trim()));
+    }
+
+    #[test]
+    fn sort_orders_lines() {
+        assert_eq!(sort("banana\napple\ncherry"), "apple\nbanana\ncherry");
+    }
+
+    #[test]
+    fn sort_preserves_trailing_newline() {
+        assert_eq!(sort("b\na\n"), "a\nb\n");
+        assert_eq!(sort("b\na"), "a\nb");
+    }
+
+    #[test]
+    fn sort_is_idempotent() {
+        let once = sort("c\na\nb");
+        assert_eq!(sort(&once), once);
+    }
+
+    #[test]
+    fn sort_single_line_is_noop() {
+        assert_eq!(sort("only one line"), "only one line");
     }
 
     #[test]

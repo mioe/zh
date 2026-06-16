@@ -16,16 +16,22 @@ echo "margin: 6px; color: #ff0000;" | zh
 | `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                            |
 | `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */`  |
 | `now`       | `date`, `time` | `2026-06-11 at 01.50.48 PM` → current local time        |
+| `sort`      | `asc`          | sort the selected lines alphabetically (visual mode)    |
 
 Both helpers keep the original value as a trailing `/* … */` comment.
 `hex2oklch` also lowercases the hex in that comment (`#FF0000` → `#ff0000`).
 
 ```sh
-zh              # apply ALL helpers
+zh              # apply ALL helpers (sort is excluded — it is opt-in)
 zh px           # only px → rem
 zh hex          # only hex → oklch
+zh sort         # sort the selected lines alphabetically (visual mode)
 zh --list       # list available helpers (also -l, --help)
 ```
+
+`sort` reorders whole lines, so it is **not** part of bare `zh` — you must
+name it explicitly. It is bound in visual mode only (see below): sorting a
+single current line in normal mode is pointless.
 
 Helpers are applied sequentially (a fold over the input); the order is the
 order in the `HELPERS` array.
@@ -115,7 +121,8 @@ Keybindings — in `~/.config/zed/keymap.json`:
       "space h h": ["workspace::SendKeystrokes", ": ! z h enter"],
       "space h p": ["workspace::SendKeystrokes", ": ! z h space p x enter"],
       "space h c": ["workspace::SendKeystrokes", ": ! z h space h e x enter"],
-      "space h n": ["workspace::SendKeystrokes", ": ! z h space n o w enter"]
+      "space h n": ["workspace::SendKeystrokes", ": ! z h space n o w enter"],
+      "space h s": ["workspace::SendKeystrokes", ": ! z h space s o r t enter"]
     }
   },
   {
@@ -132,6 +139,8 @@ Keybindings — in `~/.config/zed/keymap.json`:
 - `space h p` — px → rem only
 - `space h c` — hex → oklch only
 - `space h n` — refresh a `… at HH.MM.SS AM/PM` timestamp to the current time
+- `space h s` — sort the selected lines alphabetically (visual mode only;
+  sorting a single line in normal mode is pointless, so it is not bound there)
 
 The same approach works in Vim/Neovim (`:'<,'>!zh`) and Helix
 (select, then `|zh`).
