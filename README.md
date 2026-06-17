@@ -27,6 +27,11 @@ comment. `hex2oklch` also lowercases the hex in that comment
 narrow no-break space U+202F (`%E2%80%AF`) that macOS date/Finder strings
 sneak in.
 
+`now` skips a date that sits inside a markdown link target — a screenshot path
+like `![](…/Screenshot 2026-06-17 at 12.54.47 PM.webp)` is a filename, not a
+timestamp to refresh — so a bare `zh` (or `zh now`) never rewrites it and
+breaks the link.
+
 ```sh
 zh              # apply ALL helpers (sort is excluded — it is opt-in)
 zh px           # only px → rem

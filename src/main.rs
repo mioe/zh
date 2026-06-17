@@ -240,6 +240,12 @@ fn fmt(v: f64, decimals: usize) -> String {
 /// e.g. `2026-06-11 at 01.50.48 PM`, and replaces every occurrence with the
 /// current local time in the same format. Lines without such a stamp are
 /// returned untouched, so running over a whole selection only rewrites dates.
+///
+/// One exception: a date that sits *inside* a markdown link target — like the
+/// screenshot path `![](…/Screenshot 2026-06-17 at 12.54.47 PM.webp)` — is a
+/// filename, not a timestamp to refresh, so it is left alone. Without this
+/// guard a bare `zh` (or an explicit `zh now`) would rewrite the filename's
+/// date and break the link.
 fn now(input: &str) -> String {
     let re = Regex::new(r"\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)").unwrap();
 
@@ -248,9 +254,25 @@ fn now(input: &str) -> String {
         return input.to_string();
     }
 
+    // Byte ranges covered by markdown link targets `](…)`. A date whose match
+    // falls within one of these is part of a path and must not be touched.
+    let link_re = Regex::new(r"\]\([^)]*\)").unwrap();
+    let link_spans: Vec<(usize, usize)> =
+        link_re.find_iter(input).map(|m| (m.start(), m.end())).collect();
+
     match current_timestamp() {
         Some(stamp) => re
-            .replace_all(input, |_: &Captures| stamp.clone())
+            .replace_all(input, |c: &Captures| {
+                let m = c.get(0).unwrap();
+                let inside_link = link_spans
+                    .iter()
+                    .any(|&(s, e)| m.start() >= s && m.end() <= e);
+                if inside_link {
+                    m.as_str().to_string()
+                } else {
+                    stamp.clone()
+                }
+            })
             .into_owned(),
         None => input.to_string(),
     }
@@ -405,6 +427,31 @@ mod tests {
         let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
         let once = now("2026-06-11 at 01.50.48 PM");
         assert!(stamp.is_match(now(&once).trim()));
+    }
+
+    #[test]
+    fn now_leaves_dates_inside_markdown_links_untouched() {
+        // A screenshot filename's date is a path, not a refreshable timestamp.
+        let link = "![](../Resources/Screenshot 2026-06-17 at 12.54.47 PM.webp)";
+        assert_eq!(now(link), link);
+        // And a bare run (now + mdlink together) must only escape spaces, never
+        // rewrite the date.
+        let bare = mdlink(&now(link));
+        assert_eq!(
+            bare,
+            "![](../Resources/Screenshot%202026-06-17%20at%2012.54.47%20PM.webp)"
+        );
+    }
+
+    #[test]
+    fn now_still_refreshes_a_date_alongside_a_link() {
+        // A real timestamp outside the link is refreshed; the link's date is not.
+        let stamp = Regex::new(r"\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)").unwrap();
+        let out = now("updated: 2020-01-01 at 09.00.00 AM ![](a 2026-06-17 at 12.54.47 PM.webp)");
+        assert!(out.contains("2026-06-17 at 12.54.47 PM.webp"), "link date kept: {out:?}");
+        // Two stamps remain (one fresh, one the untouched filename).
+        assert_eq!(stamp.find_iter(&out).count(), 2);
+        assert!(!out.contains("2020-01-01"), "outside date refreshed: {out:?}");
     }
 
     #[test]
