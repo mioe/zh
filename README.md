@@ -11,20 +11,27 @@ echo "margin: 6px; color: #ff0000;" | zh
 
 ## Helpers
 
-| Name        | Aliases        | What it does                                            |
-| ----------- | -------------- | ------------------------------------------------------- |
-| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                            |
-| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */`  |
-| `now`       | `date`, `time` | `2026-06-11 at 01.50.48 PM` → current local time        |
-| `sort`      | `asc`          | sort the selected lines alphabetically (visual mode)    |
+| Name        | Aliases        | What it does                                          |
+| ----------- | -------------- | ----------------------------------------------------- |
+| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                          |
+| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */` |
+| `now`       | `date`, `time`  | `2026-06-11 at 01.50.48 PM` → current local time      |
+| `mdlink`    | `link`, `links` | `[a](b c.md)` → `[a](b%20c.md)`                       |
+| `sort`      | `asc`           | sort the selected lines alphabetically (visual mode)  |
 
-Both helpers keep the original value as a trailing `/* … */` comment.
-`hex2oklch` also lowercases the hex in that comment (`#FF0000` → `#ff0000`).
+`px2rem` and `hex2oklch` keep the original value as a trailing `/* … */`
+comment. `hex2oklch` also lowercases the hex in that comment
+(`#FF0000` → `#ff0000`). `mdlink` only touches the path inside a markdown
+`](…)`, and only for local files — `https://…`, `mailto:`, `tel:` and
+`#anchor` targets are left alone; besides a plain space it also encodes the
+narrow no-break space U+202F (`%E2%80%AF`) that macOS date/Finder strings
+sneak in.
 
 ```sh
 zh              # apply ALL helpers (sort is excluded — it is opt-in)
 zh px           # only px → rem
 zh hex          # only hex → oklch
+zh link         # only fix spaces in markdown link paths
 zh sort         # sort the selected lines alphabetically (visual mode)
 zh --list       # list available helpers (also -l, --help)
 ```
@@ -122,6 +129,7 @@ Keybindings — in `~/.config/zed/keymap.json`:
       "space h p": ["workspace::SendKeystrokes", ": ! z h space p x enter"],
       "space h c": ["workspace::SendKeystrokes", ": ! z h space h e x enter"],
       "space h n": ["workspace::SendKeystrokes", ": ! z h space n o w enter"],
+      "space h l": ["workspace::SendKeystrokes", ": ! z h space l i n k enter"],
       "space h s": ["workspace::SendKeystrokes", ": ! z h space s o r t enter"]
     }
   },
@@ -139,6 +147,7 @@ Keybindings — in `~/.config/zed/keymap.json`:
 - `space h p` — px → rem only
 - `space h c` — hex → oklch only
 - `space h n` — refresh a `… at HH.MM.SS AM/PM` timestamp to the current time
+- `space h l` — escape spaces in markdown link paths (`](a b.md)` → `](a%20b.md)`)
 - `space h s` — sort the selected lines alphabetically (visual mode only;
   sorting a single line in normal mode is pointless, so it is not bound there)
 

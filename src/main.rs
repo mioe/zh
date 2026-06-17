@@ -56,6 +56,13 @@ const HELPERS: &[Helper] = &[
         run: now,
     },
     Helper {
+        name: "mdlink",
+        aliases: &["link", "links"],
+        about: "[a](b c.md) -> [a](b%20c.md)  (escape spaces in md link paths)",
+        in_all: true,
+        run: mdlink,
+    },
+    Helper {
         name: "sort",
         aliases: &["asc"],
         about: "sort the selected lines alphabetically (opt-in; visual mode)",
@@ -269,6 +276,39 @@ fn current_timestamp() -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
+// mdlink — escape spaces in markdown link paths
+// ---------------------------------------------------------------------------
+
+/// Fixes broken relative links to static files whose path contains spaces, e.g.
+/// `[doc](my notes.md)` -> `[doc](my%20notes.md)`. Only the path inside a
+/// markdown `](...)` is touched, and only when it is a local path — absolute
+/// URLs (`scheme://…`) and `mailto:` / `tel:` / `#anchor` targets are left
+/// alone so we never mangle a real address.
+///
+/// Two whitespace characters are encoded: the regular space (` ` -> `%20`) and
+/// the narrow no-break space U+202F (-> `%E2%80%AF`, its percent-encoded UTF-8
+/// bytes), which sneaks in from macOS date/Finder strings. Re-running is a
+/// no-op: once a space is `%20` there is nothing left to encode.
+fn mdlink(input: &str) -> String {
+    // Group 2 is the link target between `](` and the closing `)`. Paths that
+    // themselves contain `)` are out of scope (same limitation as a one-liner).
+    let re = Regex::new(r"(\]\()([^)]+)(\))").unwrap();
+    // A path is "remote" — and therefore left untouched — when it starts with a
+    // URL scheme like `https://`, or with `mailto:` / `tel:` / `#`.
+    let remote = Regex::new(r"(?i)^(?:[a-z][a-z0-9+.-]*://|mailto:|tel:|#)").unwrap();
+
+    re.replace_all(input, |c: &Captures| {
+        let path = &c[2];
+        if remote.is_match(path) {
+            return c[0].to_string();
+        }
+        let fixed = path.replace(' ', "%20").replace('\u{202F}', "%E2%80%AF");
+        format!("{}{}{}", &c[1], fixed, &c[3])
+    })
+    .into_owned()
+}
+
+// ---------------------------------------------------------------------------
 // sort — sort the selected lines alphabetically
 // ---------------------------------------------------------------------------
 
@@ -365,6 +405,49 @@ mod tests {
         let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
         let once = now("2026-06-11 at 01.50.48 PM");
         assert!(stamp.is_match(now(&once).trim()));
+    }
+
+    #[test]
+    fn mdlink_escapes_spaces_in_path() {
+        assert_eq!(mdlink("[doc](my notes.md)"), "[doc](my%20notes.md)");
+    }
+
+    #[test]
+    fn mdlink_escapes_narrow_no_break_space() {
+        assert_eq!(
+            mdlink("[doc](a\u{202F}b.md)"),
+            "[doc](a%E2%80%AFb.md)"
+        );
+    }
+
+    #[test]
+    fn mdlink_leaves_remote_urls_untouched() {
+        // The query string has a space, but it's a real URL — don't touch it.
+        assert_eq!(
+            mdlink("[site](https://example.com/a b)"),
+            "[site](https://example.com/a b)"
+        );
+        assert_eq!(mdlink("[mail](mailto:a b@x.com)"), "[mail](mailto:a b@x.com)");
+        assert_eq!(mdlink("[top](#a b)"), "[top](#a b)");
+    }
+
+    #[test]
+    fn mdlink_handles_image_and_multiple_links() {
+        assert_eq!(
+            mdlink("![alt](a b.png) and [x](c d.md)"),
+            "![alt](a%20b.png) and [x](c%20d.md)"
+        );
+    }
+
+    #[test]
+    fn mdlink_idempotent() {
+        let once = mdlink("[doc](my notes.md)");
+        assert_eq!(mdlink(&once), once);
+    }
+
+    #[test]
+    fn mdlink_leaves_non_links_untouched() {
+        assert_eq!(mdlink("margin: 6px;"), "margin: 6px;");
     }
 
     #[test]
