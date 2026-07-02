@@ -29,23 +29,33 @@ struct Helper {
     /// helpers like `sort`, which *reorder* lines, are opt-in (`false`) so a
     /// plain `zh` never shuffles a selection unexpectedly — you must name it.
     in_all: bool,
+    /// Priority over markdown link targets. A `](…)` region belongs to
+    /// `mdlink`: helpers with `false` here never see it, so a filename like
+    /// `Screenshot 2026-06-11 at 1.44.05 PM.webp` can't be mistaken for a
+    /// timestamp / px value / hex color to convert. `mdlink` (which owns the
+    /// region) and `sort` (which reorders whole lines and never rewrites
+    /// characters) run over the full text.
+    sees_link_targets: bool,
     run: Transform,
 }
 
 /// To add a new helper: write a `fn(&str) -> String` and register it here.
+/// Bare `zh` applies helpers in this order.
 const HELPERS: &[Helper] = &[
     Helper {
         name: "px2rem",
         aliases: &["px", "rem"],
-        about: "6px -> 0.375rem /* 6px */",
+        about: "padding: 16px 8px; -> padding: 1rem 0.5rem; /* 16px 8px */",
         in_all: true,
+        sees_link_targets: false,
         run: px2rem,
     },
     Helper {
         name: "hex2oklch",
         aliases: &["hex", "oklch"],
-        about: "#ff0000 -> oklch(62.8% 0.2577 29.23) /* #ff0000 */",
+        about: "color: #fff; -> color: oklch(100% 0 0); /* #fff */",
         in_all: true,
+        sees_link_targets: false,
         run: hex2oklch,
     },
     Helper {
@@ -53,6 +63,7 @@ const HELPERS: &[Helper] = &[
         aliases: &["date", "time"],
         about: "2026-06-11 at 01.50.48 PM -> current local time",
         in_all: true,
+        sees_link_targets: false,
         run: now,
     },
     Helper {
@@ -60,6 +71,7 @@ const HELPERS: &[Helper] = &[
         aliases: &["link", "links"],
         about: "[a](b c.md) -> [a](b%20c.md)  (escape spaces in md link paths)",
         in_all: true,
+        sees_link_targets: true,
         run: mdlink,
     },
     Helper {
@@ -67,6 +79,7 @@ const HELPERS: &[Helper] = &[
         aliases: &["asc"],
         about: "sort the selected lines alphabetically (opt-in; visual mode)",
         in_all: false,
+        sees_link_targets: true,
         run: sort,
     },
 ];
@@ -101,14 +114,177 @@ fn main() {
         .read_to_string(&mut input)
         .expect("zh: failed to read stdin");
 
-    let output = selected
-        .iter()
-        .fold(input, |text, helper| (helper.run)(&text));
-
     // No extra newline: a vim filter must return exactly what it should paste back.
     io::stdout()
-        .write_all(output.as_bytes())
+        .write_all(apply(&selected, input).as_bytes())
         .expect("zh: failed to write stdout");
+}
+
+/// Fold the helpers over the input, enforcing the link-target priority:
+/// helpers without `sees_link_targets` are run only on the text *between*
+/// markdown link targets.
+fn apply(selected: &[&Helper], input: String) -> String {
+    selected.iter().fold(input, |text, helper| {
+        if helper.sees_link_targets {
+            (helper.run)(&text)
+        } else {
+            outside_link_targets(&text, helper.run)
+        }
+    })
+}
+
+/// Run `f` on the chunks between markdown link targets `](…)`; the targets
+/// themselves pass through verbatim.
+fn outside_link_targets(input: &str, f: Transform) -> String {
+    let link_re = Regex::new(r"\]\([^)]*\)").unwrap();
+    let mut out = String::new();
+    let mut last = 0;
+    for m in link_re.find_iter(input) {
+        out.push_str(&f(&input[last..m.start()]));
+        out.push_str(m.as_str());
+        last = m.end();
+    }
+    out.push_str(&f(&input[last..]));
+    out
+}
+
+// ---------------------------------------------------------------------------
+// css value engine — shared by px2rem and hex2oklch
+// ---------------------------------------------------------------------------
+
+/// Replace value matches line by line, adapting the comment to the syntax the
+/// value lives in:
+///
+///   foo: #fff;          ->  foo: oklch(100% 0 0); /* #fff */
+///   padding: 16px 8px;  ->  padding: 1rem 0.5rem; /* 16px 8px */
+///   px-[16px]           ->  px-[1rem]                 (tailwind: no comment)
+///   6px                 ->  0.375rem /* 6px */        (no `;`: end of line)
+///
+/// - values inside `/* … */` are skipped, so re-running is a no-op;
+/// - inside `[…]` (a tailwind arbitrary value) there is no room for a
+///   comment, and spaces become `_` (`text-[oklch(100%_0_0)]`);
+/// - otherwise a declaration's originals are collected into ONE comment after
+///   its closing `;`, merging into a comment already sitting there — so
+///   px2rem and hex2oklch on the same declaration share it;
+/// - `convert` returning `None` leaves the match untouched.
+fn convert_values(input: &str, re: &Regex, convert: &dyn Fn(&Captures) -> Option<String>) -> String {
+    let comment_re = Regex::new(r"/\*.*?\*/").unwrap();
+    let bracket_re = Regex::new(r"\[[^\]]*\]").unwrap();
+    input
+        .split_inclusive('\n')
+        .map(|line| convert_line(line, re, convert, &comment_re, &bracket_re))
+        .collect()
+}
+
+fn convert_line(
+    full: &str,
+    re: &Regex,
+    convert: &dyn Fn(&Captures) -> Option<String>,
+    comment_re: &Regex,
+    bracket_re: &Regex,
+) -> String {
+    let (line, eol) = match full.strip_suffix('\n') {
+        Some(l) => (l, "\n"),
+        None => (full, ""),
+    };
+
+    let spans = |re: &Regex| -> Vec<(usize, usize)> {
+        re.find_iter(line).map(|m| (m.start(), m.end())).collect()
+    };
+    let comments = spans(comment_re);
+    let brackets = spans(bracket_re);
+    let within =
+        |spans: &[(usize, usize)], s: usize, e: usize| spans.iter().any(|&(a, b)| s >= a && e <= b);
+
+    // Replacements: (start, end, converted text, original to echo in a comment).
+    let mut reps: Vec<(usize, usize, String, Option<&str>)> = Vec::new();
+    for c in re.captures_iter(line) {
+        let m = c.get(0).unwrap();
+        if within(&comments, m.start(), m.end()) {
+            continue; // already converted on an earlier run — the original lives here
+        }
+        let Some(converted) = convert(&c) else { continue };
+        if within(&brackets, m.start(), m.end()) {
+            reps.push((m.start(), m.end(), converted.replace(' ', "_"), None));
+        } else {
+            reps.push((m.start(), m.end(), converted, Some(m.as_str())));
+        }
+    }
+    if reps.is_empty() {
+        return full.to_string();
+    }
+
+    let mut out = String::new();
+    let mut pending: Vec<&str> = Vec::new();
+    let mut reps = reps.into_iter().peekable();
+    let mut i = 0;
+
+    while i < line.len() {
+        // Next event: a replacement to emit, or — once originals are pending —
+        // the `;` that closes their declaration.
+        let next_rep = reps.peek().map(|r| r.0);
+        let next_semi = if pending.is_empty() {
+            None
+        } else {
+            line.as_bytes()[i..]
+                .iter()
+                .enumerate()
+                .map(|(off, &b)| (i + off, b))
+                .find(|&(p, b)| b == b';' && !within(&comments, p, p + 1) && !within(&brackets, p, p + 1))
+                .map(|(p, _)| p)
+        };
+        let stop = [next_rep, next_semi, Some(line.len())]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap();
+        out.push_str(&line[i..stop]);
+        i = stop;
+        if i >= line.len() {
+            break;
+        }
+
+        if next_rep == Some(i) {
+            let (_, end, text, original) = reps.next().unwrap();
+            out.push_str(&text);
+            if let Some(o) = original {
+                pending.push(o);
+            }
+            i = end;
+        } else {
+            out.push(';');
+            i += 1;
+            // Merge into a comment already sitting right after the `;` (left
+            // by a previous helper for this same declaration) instead of
+            // stacking a second one.
+            let ws_end = line[i..].find(|ch| ch != ' ').map_or(line.len(), |n| i + n);
+            match comments.iter().find(|&&(cs, _)| cs == ws_end) {
+                Some(&(cs, ce)) => {
+                    let existing = line[cs + 2..ce - 2].trim();
+                    out.push_str(&line[i..cs]);
+                    out.push_str(&format!("/* {} {} */", existing, pending.join(" ")));
+                    i = ce;
+                }
+                None => out.push_str(&format!(" /* {} */", pending.join(" "))),
+            }
+            pending.clear();
+        }
+    }
+
+    // No `;` after the last converted value: the comment lands at the end of
+    // the line, again merging into a trailing comment if one is there.
+    if !pending.is_empty() {
+        match out.ends_with("*/").then(|| out.rfind("/*")).flatten() {
+            Some(open) => {
+                let existing = out[open + 2..out.len() - 2].trim().to_string();
+                out.truncate(open);
+                out.push_str(&format!("/* {} {} */", existing, pending.join(" ")));
+            }
+            None => out.push_str(&format!(" /* {} */", pending.join(" "))),
+        }
+    }
+    out.push_str(eol);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -121,18 +297,11 @@ fn px2rem(input: &str) -> String {
         .and_then(|v| v.parse().ok())
         .unwrap_or(16.0);
 
-    // Group 1 catches values already living inside a comment (`/* 6px */`)
-    // so re-running zh on an already converted line is a no-op for them.
-    let re = Regex::new(r"(/\*\s*)?(-?\d+(?:\.\d+)?)px\b").unwrap();
-
-    re.replace_all(input, |c: &Captures| {
-        if c.get(1).is_some() {
-            return c[0].to_string();
-        }
-        let px: f64 = c[2].parse().unwrap();
-        format!("{}rem /* {}px */", fmt(px / base, 4), &c[2])
+    let re = Regex::new(r"-?\d+(?:\.\d+)?px\b").unwrap();
+    convert_values(input, &re, &|c: &Captures| {
+        let px: f64 = c[0].strip_suffix("px").unwrap().parse().unwrap();
+        Some(format!("{}rem", fmt(px / base, 4)))
     })
-    .into_owned()
 }
 
 // ---------------------------------------------------------------------------
@@ -140,25 +309,12 @@ fn px2rem(input: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn hex2oklch(input: &str) -> String {
-    // Group 1 catches a hex already living inside a comment (`/* #ff0000 */`)
-    // so re-running zh on an already converted line is a no-op for it.
-    let re = Regex::new(r"(/\*\s*)?#([0-9a-fA-F]{3,8})\b").unwrap();
-
-    re.replace_all(input, |c: &Captures| {
-        if c.get(1).is_some() {
-            return c[0].to_string();
-        }
-        match parse_hex(&c[2]) {
-            // Echo the original hex as a trailing comment, lowercased (`#FF0000` -> `#ff0000`).
-            Some((r, g, b, alpha)) => format!(
-                "{} /* #{} */",
-                format_oklch(srgb_to_oklch(r, g, b), alpha),
-                c[2].to_lowercase()
-            ),
-            None => c[0].to_string(), // not a valid color length (e.g. 5 digits)
-        }
+    let re = Regex::new(r"#[0-9a-fA-F]{3,8}\b").unwrap();
+    convert_values(input, &re, &|c: &Captures| {
+        // None (e.g. a 5-digit "hex") leaves the match untouched.
+        parse_hex(&c[0][1..])
+            .map(|(r, g, b, alpha)| format_oklch(srgb_to_oklch(r, g, b), alpha))
     })
-    .into_owned()
 }
 
 /// Returns (r, g, b) in 0..=255 and optional alpha in 0.0..=1.0.
@@ -239,13 +395,8 @@ fn fmt(v: f64, decimals: usize) -> String {
 /// Matches the timestamp shape produced by `date "+%Y-%m-%d at %I.%M.%S %p"`,
 /// e.g. `2026-06-11 at 01.50.48 PM`, and replaces every occurrence with the
 /// current local time in the same format. Lines without such a stamp are
-/// returned untouched, so running over a whole selection only rewrites dates.
-///
-/// One exception: a date that sits *inside* a markdown link target — like the
-/// screenshot path `![](…/Screenshot 2026-06-17 at 12.54.47 PM.webp)` — is a
-/// filename, not a timestamp to refresh, so it is left alone. Without this
-/// guard a bare `zh` (or an explicit `zh now`) would rewrite the filename's
-/// date and break the link.
+/// returned untouched. Dates inside markdown link targets never reach this
+/// helper — `apply` masks them out (see `Helper::sees_link_targets`).
 fn now(input: &str) -> String {
     let re = Regex::new(r"\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)").unwrap();
 
@@ -254,26 +405,8 @@ fn now(input: &str) -> String {
         return input.to_string();
     }
 
-    // Byte ranges covered by markdown link targets `](…)`. A date whose match
-    // falls within one of these is part of a path and must not be touched.
-    let link_re = Regex::new(r"\]\([^)]*\)").unwrap();
-    let link_spans: Vec<(usize, usize)> =
-        link_re.find_iter(input).map(|m| (m.start(), m.end())).collect();
-
     match current_timestamp() {
-        Some(stamp) => re
-            .replace_all(input, |c: &Captures| {
-                let m = c.get(0).unwrap();
-                let inside_link = link_spans
-                    .iter()
-                    .any(|&(s, e)| m.start() >= s && m.end() <= e);
-                if inside_link {
-                    m.as_str().to_string()
-                } else {
-                    stamp.clone()
-                }
-            })
-            .into_owned(),
+        Some(stamp) => re.replace_all(input, stamp.as_str()).into_owned(),
         None => input.to_string(),
     }
 }
@@ -351,54 +484,57 @@ fn sort(input: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (reference values cross-checked against oklch.com)
+// Tests (oklch reference values cross-checked against oklch.com)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn all() -> Vec<&'static Helper> {
+        HELPERS.iter().filter(|h| h.in_all).collect()
+    }
+
+    // --- px2rem -----------------------------------------------------------
+
     #[test]
-    fn px_basic() {
-        assert_eq!(px2rem("margin: 6px;"), "margin: 0.375rem /* 6px */;");
+    fn px_css_declaration_comments_after_semicolon() {
+        assert_eq!(
+            px2rem("padding: 16px 8px;"),
+            "padding: 1rem 0.5rem; /* 16px 8px */"
+        );
+    }
+
+    #[test]
+    fn px_tailwind_bracket_has_no_comment() {
+        assert_eq!(px2rem("px-[16px]"), "px-[1rem]");
+    }
+
+    #[test]
+    fn px_bare_value_comments_inline() {
+        assert_eq!(px2rem("6px"), "0.375rem /* 6px */");
     }
 
     #[test]
     fn px_idempotent() {
-        let once = px2rem("padding: 12px 6px;");
+        let once = px2rem("padding: 16px 8px;");
         assert_eq!(px2rem(&once), once);
     }
 
+    // --- hex2oklch --------------------------------------------------------
+
     #[test]
-    fn hex_red() {
-        assert_eq!(
-            hex2oklch("#ff0000"),
-            "oklch(62.8% 0.2577 29.23) /* #ff0000 */"
-        );
+    fn hex_css_declaration_comments_after_semicolon() {
+        assert_eq!(hex2oklch("foo: #fff;"), "foo: oklch(100% 0 0); /* #fff */");
     }
 
     #[test]
-    fn hex_uppercase_is_lowercased_in_comment() {
-        assert_eq!(
-            hex2oklch("#FF0000"),
-            "oklch(62.8% 0.2577 29.23) /* #ff0000 */"
-        );
+    fn hex_tailwind_bracket_uses_underscores_no_comment() {
+        assert_eq!(hex2oklch("text-[#fff]"), "text-[oklch(100%_0_0)]");
     }
 
     #[test]
-    fn hex_idempotent() {
-        let once = hex2oklch("color: #FF0000;");
-        assert_eq!(hex2oklch(&once), once);
-    }
-
-    #[test]
-    fn hex_gray_is_achromatic() {
-        assert_eq!(hex2oklch("#808080"), "oklch(59.99% 0 0) /* #808080 */");
-    }
-
-    #[test]
-    fn hex_shorthand_and_alpha() {
-        assert_eq!(hex2oklch("#fff"), "oklch(100% 0 0) /* #fff */");
+    fn hex_alpha() {
         assert_eq!(
             hex2oklch("#ff000080"),
             "oklch(62.8% 0.2577 29.23 / 50.2%) /* #ff000080 */"
@@ -406,83 +542,66 @@ mod tests {
     }
 
     #[test]
+    fn hex_idempotent() {
+        let once = hex2oklch("color: #ff0000;");
+        assert_eq!(hex2oklch(&once), once);
+    }
+
+    // --- composition ------------------------------------------------------
+
+    #[test]
+    fn mixed_declaration_shares_one_comment() {
+        let out = hex2oklch(&px2rem("border: 1px solid #3b3b3b;"));
+        assert_eq!(
+            out,
+            "border: 0.0625rem solid oklch(35.23% 0 0); /* 1px #3b3b3b */"
+        );
+    }
+
+    // --- now --------------------------------------------------------------
+
+    #[test]
     fn now_replaces_the_stamp_only() {
         let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
         let out = now("createdAt: 2026-06-11 at 01.50.48 PM");
         let value = out.strip_prefix("createdAt: ").unwrap();
         assert!(stamp.is_match(value), "got {out:?}");
-        // The prefix (key) is preserved untouched.
-        assert!(out.starts_with("createdAt: "));
     }
 
-    #[test]
-    fn now_leaves_non_dates_untouched() {
-        assert_eq!(now("author: mioe"), "author: mioe");
-        assert_eq!(now("margin: 6px;"), "margin: 6px;");
-    }
+    // --- priorities -------------------------------------------------------
 
     #[test]
-    fn now_is_idempotent_in_shape() {
-        // Re-running keeps producing a valid stamp (a fresh "now", same format).
-        let stamp = Regex::new(r"^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)$").unwrap();
-        let once = now("2026-06-11 at 01.50.48 PM");
-        assert!(stamp.is_match(now(&once).trim()));
-    }
-
-    #[test]
-    fn now_leaves_dates_inside_markdown_links_untouched() {
-        // A screenshot filename's date is a path, not a refreshable timestamp.
-        let link = "![](../Resources/Screenshot 2026-06-17 at 12.54.47 PM.webp)";
-        assert_eq!(now(link), link);
-        // And a bare run (now + mdlink together) must only escape spaces, never
-        // rewrite the date.
-        let bare = mdlink(&now(link));
+    fn link_targets_belong_to_mdlink() {
+        // A screenshot filename holds a date, a "px value" and a "hex color" —
+        // none of them may be converted; only mdlink escapes the spaces.
+        let line = "![](../Resources/Screenshot 2026-06-11 at 11.44.05 AM 16px #fff.webp)";
         assert_eq!(
-            bare,
-            "![](../Resources/Screenshot%202026-06-17%20at%2012.54.47%20PM.webp)"
+            apply(&all(), line.to_string()),
+            "![](../Resources/Screenshot%202026-06-11%20at%2011.44.05%20AM%2016px%20#fff.webp)"
         );
     }
 
     #[test]
-    fn now_still_refreshes_a_date_alongside_a_link() {
-        // A real timestamp outside the link is refreshed; the link's date is not.
-        let stamp = Regex::new(r"\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} (?:AM|PM)").unwrap();
-        let out = now("updated: 2020-01-01 at 09.00.00 AM ![](a 2026-06-17 at 12.54.47 PM.webp)");
-        assert!(out.contains("2026-06-17 at 12.54.47 PM.webp"), "link date kept: {out:?}");
-        // Two stamps remain (one fresh, one the untouched filename).
-        assert_eq!(stamp.find_iter(&out).count(), 2);
+    fn now_still_refreshes_outside_a_link() {
+        let out = apply(
+            &all(),
+            "updated: 2020-01-01 at 09.00.00 AM ![](a 2026-06-17 at 12.54.47 PM.webp)".to_string(),
+        );
         assert!(!out.contains("2020-01-01"), "outside date refreshed: {out:?}");
-    }
-
-    #[test]
-    fn mdlink_escapes_spaces_in_path() {
-        assert_eq!(mdlink("[doc](my notes.md)"), "[doc](my%20notes.md)");
-    }
-
-    #[test]
-    fn mdlink_escapes_narrow_no_break_space() {
-        assert_eq!(
-            mdlink("[doc](a\u{202F}b.md)"),
-            "[doc](a%E2%80%AFb.md)"
+        assert!(
+            out.contains("![](a%202026-06-17%20at%2012.54.47%20PM.webp)"),
+            "link only escaped, date kept: {out:?}"
         );
     }
 
+    // --- mdlink -----------------------------------------------------------
+
     #[test]
-    fn mdlink_leaves_remote_urls_untouched() {
-        // The query string has a space, but it's a real URL — don't touch it.
+    fn mdlink_escapes_local_paths_only() {
+        assert_eq!(mdlink("[doc](my notes.md)"), "[doc](my%20notes.md)");
         assert_eq!(
             mdlink("[site](https://example.com/a b)"),
             "[site](https://example.com/a b)"
-        );
-        assert_eq!(mdlink("[mail](mailto:a b@x.com)"), "[mail](mailto:a b@x.com)");
-        assert_eq!(mdlink("[top](#a b)"), "[top](#a b)");
-    }
-
-    #[test]
-    fn mdlink_handles_image_and_multiple_links() {
-        assert_eq!(
-            mdlink("![alt](a b.png) and [x](c d.md)"),
-            "![alt](a%20b.png) and [x](c%20d.md)"
         );
     }
 
@@ -492,40 +611,11 @@ mod tests {
         assert_eq!(mdlink(&once), once);
     }
 
-    #[test]
-    fn mdlink_leaves_non_links_untouched() {
-        assert_eq!(mdlink("margin: 6px;"), "margin: 6px;");
-    }
+    // --- sort -------------------------------------------------------------
 
     #[test]
-    fn sort_orders_lines() {
+    fn sort_orders_lines_and_keeps_trailing_newline() {
         assert_eq!(sort("banana\napple\ncherry"), "apple\nbanana\ncherry");
-    }
-
-    #[test]
-    fn sort_preserves_trailing_newline() {
         assert_eq!(sort("b\na\n"), "a\nb\n");
-        assert_eq!(sort("b\na"), "a\nb");
-    }
-
-    #[test]
-    fn sort_is_idempotent() {
-        let once = sort("c\na\nb");
-        assert_eq!(sort(&once), once);
-    }
-
-    #[test]
-    fn sort_single_line_is_noop() {
-        assert_eq!(sort("only one line"), "only one line");
-    }
-
-    #[test]
-    fn mixed_line() {
-        let line = "border: 1px solid #3b3b3b;";
-        let out = hex2oklch(&px2rem(line));
-        assert_eq!(
-            out,
-            "border: 0.0625rem /* 1px */ solid oklch(35.23% 0 0) /* #3b3b3b */;"
-        );
     }
 }

@@ -1,8 +1,9 @@
 [package]
 name = "zh"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 description = "Stdin→stdout text helpers for Zed (and any editor with a shell filter)"
+license = "MIT"
 
 [dependencies]
 regex = "1"

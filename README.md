@@ -6,31 +6,43 @@ Vim, Helix, or any shell pipeline.
 
 ```sh
 echo "margin: 6px; color: #ff0000;" | zh
-# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23) /* #ff0000 */;
+# margin: 0.375rem; /* 6px */ color: oklch(62.8% 0.2577 29.23); /* #ff0000 */
 ```
 
 ## Helpers
 
-| Name        | Aliases        | What it does                                          |
-| ----------- | -------------- | ----------------------------------------------------- |
-| `px2rem`    | `px`, `rem`    | `6px` → `0.375rem /* 6px */`                          |
-| `hex2oklch` | `hex`, `oklch` | `#ff0000` → `oklch(62.8% 0.2577 29.23) /* #ff0000 */` |
-| `now`       | `date`, `time`  | `2026-06-11 at 01.50.48 PM` → current local time      |
-| `mdlink`    | `link`, `links` | `[a](b c.md)` → `[a](b%20c.md)`                       |
-| `sort`      | `asc`           | sort the selected lines alphabetically (visual mode)  |
+| Name        | Aliases         | What it does                                                 |
+| ----------- | --------------- | ------------------------------------------------------------ |
+| `px2rem`    | `px`, `rem`     | `padding: 16px 8px;` → `padding: 1rem 0.5rem; /* 16px 8px */` |
+| `hex2oklch` | `hex`, `oklch`  | `color: #fff;` → `color: oklch(100% 0 0); /* #fff */`         |
+| `now`       | `date`, `time`  | `2026-06-11 at 01.50.48 PM` → current local time              |
+| `mdlink`    | `link`, `links` | `[a](b c.md)` → `[a](b%20c.md)`                               |
+| `sort`      | `asc`           | sort the selected lines alphabetically (visual mode)          |
 
-`px2rem` and `hex2oklch` keep the original value as a trailing `/* … */`
-comment. `hex2oklch` also lowercases the hex in that comment
-(`#FF0000` → `#ff0000`). `mdlink` only touches the path inside a markdown
-`](…)`, and only for local files — `https://…`, `mailto:`, `tel:` and
-`#anchor` targets are left alone; besides a plain space it also encodes the
-narrow no-break space U+202F (`%E2%80%AF`) that macOS date/Finder strings
-sneak in.
+`px2rem` and `hex2oklch` adapt to the syntax the value lives in:
 
-`now` skips a date that sits inside a markdown link target — a screenshot path
-like `![](…/Screenshot 2026-06-17 at 12.54.47 PM.webp)` is a filename, not a
-timestamp to refresh — so a bare `zh` (or `zh now`) never rewrites it and
-breaks the link.
+- **CSS declaration** — the originals of one declaration are collected into a
+  single `/* … */` comment after its `;`, shared between helpers:
+  `border: 1px solid #3b3b3b;` →
+  `border: 0.0625rem solid oklch(35.23% 0 0); /* 1px #3b3b3b */`
+- **Tailwind arbitrary value** — inside `[…]` there is no room for a comment,
+  and spaces become underscores: `px-[16px] text-[#fff]` →
+  `px-[1rem] text-[oklch(100%_0_0)]`
+- **Bare value** (no `;` on the line) — the comment lands at the end of the
+  line: `6px` → `0.375rem /* 6px */`
+
+`mdlink` only touches the path inside a markdown `](…)`, and only for local
+files — `https://…`, `mailto:`, `tel:` and `#anchor` targets are left alone;
+besides a plain space it also encodes the narrow no-break space U+202F
+(`%E2%80%AF`) that macOS date/Finder strings sneak in.
+
+### Priorities
+
+A markdown link target `](…)` **belongs to `mdlink`**: `px2rem`, `hex2oklch`
+and `now` never see that region. A screenshot path like
+`![](…/Screenshot 2026-06-11 at 1.44.05 PM.webp)` holds a date (and could hold
+a "px value" or a "#hex"), but it is a filename — so a bare `zh` only escapes
+its spaces and never rewrites its contents.
 
 ```sh
 zh              # apply ALL helpers (sort is excluded — it is opt-in)
@@ -46,7 +58,8 @@ name it explicitly. It is bound in visual mode only (see below): sorting a
 single current line in normal mode is pointless.
 
 Helpers are applied sequentially (a fold over the input); the order is the
-order in the `HELPERS` array.
+order in the `HELPERS` array, and helpers without link-target priority are
+run only on the text *between* markdown link targets.
 
 ## Installation
 
@@ -109,7 +122,7 @@ Restart Zed afterwards so it picks up the new binary.
 
 ```sh
 echo "margin: 6px; color: #ff0000;" | zh
-# margin: 0.375rem /* 6px */; color: oklch(62.8% 0.2577 29.23) /* #ff0000 */;
+# margin: 0.375rem; /* 6px */ color: oklch(62.8% 0.2577 29.23); /* #ff0000 */
 
 zh --list    # prints the helper table
 
@@ -127,6 +140,7 @@ Keybindings — in `~/.config/zed/keymap.json`:
 
 ```json
 [
+  // zh — https://github.com/mioe/zh
   {
     "context": "vim_mode == visual",
     "bindings": {
@@ -141,20 +155,26 @@ Keybindings — in `~/.config/zed/keymap.json`:
   {
     "context": "vim_mode == normal",
     "bindings": {
-      "space h h": ["workspace::SendKeystrokes", "shift-v : ! z h enter"]
+      "space h h": ["workspace::SendKeystrokes", "shift-v : ! z h enter"],
+      "space h p": ["workspace::SendKeystrokes", "shift-v : ! z h space p x enter"],
+      "space h c": ["workspace::SendKeystrokes", "shift-v : ! z h space h e x enter"],
+      "space h n": ["workspace::SendKeystrokes", "shift-v : ! z h space n o w enter"],
+      "space h l": ["workspace::SendKeystrokes", "shift-v : ! z h space l i n k enter"]
     }
   }
 ]
 ```
 
-- `space h h` — run all helpers at once (in normal mode it selects the
-  current line first)
+- `space h h` — run all helpers at once
 - `space h p` — px → rem only
 - `space h c` — hex → oklch only
 - `space h n` — refresh a `… at HH.MM.SS AM/PM` timestamp to the current time
 - `space h l` — escape spaces in markdown link paths (`](a b.md)` → `](a%20b.md)`)
 - `space h s` — sort the selected lines alphabetically (visual mode only;
   sorting a single line in normal mode is pointless, so it is not bound there)
+
+In normal mode every binding except `space h s` works too — each one prepends
+`shift-v` to select the current line before piping it through `zh`.
 
 The same approach works in Vim/Neovim (`:'<,'>!zh`) and Helix
 (select, then `|zh`).
@@ -183,6 +203,16 @@ lines turns out to be faster than making a precise selection.
 **Idempotency.** Values inside comments (`/* 6px */`) are left untouched,
 so running the filter twice over the same text is safe.
 
+**Priorities.** Conflicts between helpers are resolved by region ownership:
+markdown link targets `](…)` belong to `mdlink`, and the value helpers
+(`px2rem`, `hex2oklch`, `now`) are only ever run on the text between them.
+`sort` reorders whole lines without rewriting characters, so it sees the full
+text too.
+
 **Exact output.** zh writes back exactly what it transformed — no trailing
 newline is added, because a vim filter must return precisely the text that
 gets pasted back into the buffer.
+
+## License
+
+[MIT](LICENSE)
